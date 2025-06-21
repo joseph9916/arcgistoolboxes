@@ -57,8 +57,8 @@ class Tool:
                 parameterType = "optional",
                 direction = "Input"),
             arcpy.Parameter(
-                displayName = "Filter Name",
-                name = "Filter Name",
+                displayName = "Filter Name (separate more than one with a comma)",
+                name = "Filter Name  (separate more than one with a comma)",
                 datatype = "GPString",
                 parameterType = "optional",
                 direction = "Input"),
@@ -68,7 +68,9 @@ class Tool:
                 datatype = "GPString",
                 parameterType = "Required",
                 direction = "Input")
-        ]
+                ]
+        params[6].filter.type = "ValueList"
+        params[6].filter.list = ["Point", "Polyline", "Polygon"]
         return params
 
     def isLicensed(self):
@@ -104,7 +106,7 @@ class Tool:
         existing_domains = [d.name for d in arcpy.da.ListDomains(gdb_path)]
         self.__check_domain_headers(delete_csv, 'delete')
         for index, row in delete_csv.iterrows():
-            domain_name = row['Delete_Domain']
+            domain_name = row['Delete Domain']
             if domain_name in existing_domains:
                 try:
                     arcpy.management.DeleteDomain(gdb_path, domain_name)
@@ -113,7 +115,7 @@ class Tool:
                 except Exception as e:
                     arcpy.AddMessage(f"⚠ Could not delete domain '{domain_name}': {e}")
     
-    def __domain_to_create(self, create_csv, gdb_path):
+    def __domain_to_create(self, create_csv, coded_value_json, gdb_path):
         
         # List all existing domains
         existing_domains = [d.name for d in arcpy.da.ListDomains(gdb_path)]
@@ -123,14 +125,30 @@ class Tool:
             domain_description = row['Description']
             field_type = row['Field Type']
             domain_type = row['Domain Type']
+            new_domains = []
             if domain_name not in existing_domains:
                 try:
                     arcpy.management.CreateDomain(gdb_path, domain_name, domain_description, field_type, domain_type)
-                    existing_domains.append(domain_name)  # Update the list of existing domains
+                    new_domains.append(domain_name)  # Update the list of existing domains
                     arcpy.AddMessage(f"✅ Created domain '{domain_name}' in {gdb_path}")
                 except Exception as e:
                     arcpy.AddMessage(f"⚠ Could not create domain '{domain_name}': {e}")
-
+            else:
+                arcpy.AddMessage(f"⚠ Domain '{domain_name}' already exists in {gdb_path}. Skipping creation.") 
+                # Check if the domain type is coded value
+            if domain_type == "Coded Value":
+                # Check if the domain has coded values
+                domain = arcpy.da.ListDomains(gdb_path, domain_name)[0]
+                if domain.domainType == "Coded Value":
+                    # Check if the coded value JSON file is provided
+                    if coded_value_json:
+                        # Load list of coded values from JSON
+                        self.__coded_values_to_create(coded_value_json, gdb_path)
+                    else:
+                        arcpy.AddMessage(f"⚠ Domain '{domain_name}' already exists in {gdb_path} but no JSON file provided for coded values.")
+                else:
+                    arcpy.AddMessage(f"⚠ Domain '{domain_name}' is not a Coded Value domain. Skipping...")
+                
     def from_json_file(self, filename):
         """
         Returns a list of coded domains from the specified JSON file.
@@ -146,7 +164,11 @@ class Tool:
 
     def __coded_values_to_create(self, coded_value_json, gdb_path):
         # Load list of coded values from JSON
-        codes_list = self.from_json_file(coded_value_json)
+        if coded_value_json and os.path.exists(coded_value_json):
+            codes_list = self.from_json_file(coded_value_json)
+        else:
+            arcpy.AddMessage(f"⚠ Invalid or missing JSON file: {coded_value_json}")
+            return
         existing_domains = [d.name for d in arcpy.da.ListDomains(gdb_path)]
         # Add coded values to existing domains
         for codes_dict in codes_list:
@@ -154,6 +176,10 @@ class Tool:
             if domain_name in existing_domains:
                 for code, description in codes_dict.items():
                     if code != "domain_name":  # Skip the domain name entry
+                        # Validate code and description
+                        if code is None or description is None:
+                            arcpy.AddMessage(f"⚠ Skipping invalid code or description for domain '{domain_name}'")
+                            continue
                         try:
                             arcpy.management.AddCodedValueToDomain(gdb_path, domain_name, code, description)
                             arcpy.AddMessage(f"✅ Added code '{code}' to domain '{domain_name}'")
@@ -181,6 +207,14 @@ class Tool:
                 else:
                     arcpy.AddMessage(f"⚠ Domain '{domain_name}' not found in {gdb_path}. Skipping assignment.")
 
+    def get_gdb_list(self, root_folder):
+        """Get a list of all geodatabases in the specified folder."""
+        gdb_list = []
+        for dirpath, dirs, files in os.walk(root_folder):
+            for dirname in dirs:
+                if dirname.endswith(".gdb"):
+                    gdb_list.append(os.path.join(dirpath, dirname))
+        return gdb_list
 
     def execute(self, parameters, messages):
         """The source code of the tool."""
@@ -206,25 +240,21 @@ class Tool:
             coded_values_domain = None
             arcpy.AddMessage("No or Invalid coded value domain json present")
         if parameters[5].valueAsText is not None:
-            filter_name = parameters[5].valueAsText
+            filter_names = parameters[5].valueAsText
         else:
-            filter_name = ""
+            filter_names = ""
         shp_type = parameters[6].valueAsText
-        gdb_list = []
         shp_list = []
 
         # Locate all geodatabases
-        for dirpath, dirnames, filenames in os.walk(root_folder):
-            for dirname in dirnames:
-                if dirname.endswith(".gdb"):  
-                    gdb_list.append(os.path.join(dirpath, dirname))
+        gdb_list = self.get_gdb_list(root_folder)
+        if len(gdb_list) == 0:
+            arcpy.AddMessage("No geodatabases found in the specified folder.")
+            return
 
         # Process each geodatabase
         for gdb_path in gdb_list:
             arcpy.env.workspace = gdb_path
-            # Get feature classes matching the pattern
-            feature_classes = arcpy.ListFeatureClasses(f"*{filter_name}*", shp_type)
-
             # Delete domains 
             if domain_to_delete is not None:
                 self.__domain_to_delete(domain_to_delete, gdb_path)
@@ -234,6 +264,9 @@ class Tool:
                 self.__coded_values_to_create(coded_values_domain, gdb_path)
             if domain_to_assign_to_fields is not None:
                 self.__assign_domains_to_fields(domain_to_assign_to_fields, feature_classes, gdb_path)
+            # Get feature classes matching the pattern
+            for filter_name in filter_names.split(','):
+                feature_classes = arcpy.ListFeatureClasses(f"*{filter_name}*", shp_type)
             else:
                 arcpy.AddMessage('No gdb in Folder')
         return
