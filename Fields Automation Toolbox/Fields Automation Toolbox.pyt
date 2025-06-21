@@ -75,7 +75,7 @@ class Tool:
                 parameterType = "Required",
                 direction = "Input")
         ]
-        params[7].type = "ValueList"
+        params[7].filter.type = "ValueList"
         params[7].filter.list = ["Point", "Polyline", "Polygon"]
         return params
 
@@ -96,9 +96,9 @@ class Tool:
 
     def __check_field_headers(self, fields_to_check, identifier):
         if identifier == 'change':
-            headers = ('OLD NAMES', 'NEW NAMES', 'NEW ALIAS', 'LENGTH')
+            headers = ['OLD NAMES', 'NEW NAMES', 'NEW ALIAS', 'LENGTH']
         if identifier == 'add':
-            headers = ('Field Name', 'Alias', 'TYPE', 'PRECISION', 'LENGTH')
+            headers = ['Field Name', 'Alias', 'TYPE', 'PRECISION', 'LENGTH']
         if identifier == 'delete':
             headers = ['TO BE DELETED']
         for header in headers:
@@ -121,7 +121,7 @@ class Tool:
                 arcpy.AddMessage(f"Field {old_name} does not exist in {fc}. Skipping...")
                 continue
             try:
-                arcpy.AddMessage(f"Changi {old_name} of type {field_to_change.type} in {fc}")
+                arcpy.AddMessage(f"Changing {old_name} of type {field_to_change.type} in {fc}")
                 if field_to_change.type == 'String':
                     if pd.isna(new_name) or new_name == "" or str(new_name).lower() == "nan":
                         new_name = old_name
@@ -184,6 +184,8 @@ class Tool:
         feature_classes_str = parameters[2].valueAsText
         if feature_classes_str is not None and feature_classes_str != "":
             feature_classes = [fc.strip().replace("'", "") for fc in feature_classes_str.split(";")]
+        else:
+            feature_classes = []
         gdb_list = []
         if gdb_paths is not None and gdb_paths != "":
             for gdb_path in gdb_paths.split(";"):
@@ -192,7 +194,8 @@ class Tool:
                     gdb_list.append(clean_path)
                 else:
                     arcpy.AddWarning(f"The provided GDB path {gdb_path} does not exist. Skipping...")
-        if (gdb_paths is None or gdb_paths == "") and (folder is None or folder == "" and (feature_classes_str is None or feature_classes_str == "")):
+        if (gdb_paths is None or gdb_paths == "") and (folder is None or folder == "") and (feature_classes_str is None or feature_classes_str == ""):
+            arcpy.AddMessage(f"{feature_classes_str}")
             raise ValueError("You must provide either a GDB folder or a GDB path or feature classes.")
         if parameters[3].valueAsText is not None and parameters[3].valueAsText.endswith(".csv"):
             fields_to_change = pd.read_csv(parameters[3].valueAsText)
@@ -212,7 +215,7 @@ class Tool:
         if parameters[6].valueAsText is not None:
             filter_names = parameters[6].valueAsText
         else:
-            filter_name = []
+            filter_names = []
         shp_type = parameters[7].valueAsText
         shp_list = []
 
@@ -228,23 +231,33 @@ class Tool:
             #raise TypeError("headers must be in these name")
             for gdb_path in gdb_list:
                 arcpy.env.workspace = gdb_path
-                filter_list = filter_names.split(",")
+                if isinstance(filter_names, list):
+                    filter_list = []
+                    for item in filter_names:
+                        filter_list.extend(str(item).split(","))
                 for filter_name in filter_list:
                     if filter_name != "":
                         for feature_class in arcpy.ListFeatureClasses(f"*{filter_name}*", shp_type):
                             if feature_class not in feature_classes:
                                 feature_classes.append(feature_class)
-                arcpy.AddMessage(f"Feature classes with filter {filter_name} are {feature_classes}")
-                for fc in feature_classes:
-                    if fields_to_delete is not None:
-                        self.__delete_field_name(fc, fields_to_delete)
-                    if fields_to_change is not None:
-                        self.__change_field_name(fc, fields_to_change)
-                    if fields_to_add is not None:
-                        self.__add_field_name(fc, fields_to_add)
+                        arcpy.AddMessage(f"Feature classes with filter {filter_name} are {feature_classes}")
 
         else:
             arcpy.AddMessage('No gdb in Folder')
+            if len(feature_classes) == 0:
+                arcpy.AddMessage("No feature classes found in the specified geodatabases.")
+                return
+        for feature_class in feature_classes:
+            if not arcpy.Exists(feature_class):
+                arcpy.AddWarning(f"The feature class {feature_class} does not exist. Skipping...")
+                continue
+            if fields_to_change is not None:
+                self.__change_field_name(feature_class, fields_to_change)
+            if fields_to_add is not None:
+                self.__add_field_name(feature_class, fields_to_add)
+            if fields_to_delete is not None:
+                self.__delete_field_name(feature_class, fields_to_delete)
+            shp_list.append(feature_class)
         return
 
     def postExecute(self, parameters):
