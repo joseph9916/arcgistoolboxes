@@ -213,9 +213,10 @@ class Tool:
             fields_to_delete = None
             arcpy.AddMessage("No fields name to delete csv present")
         if parameters[6].valueAsText is not None:
-            filter_names = parameters[6].valueAsText
+            filter_names = parameters[6].valueAsText.split(",")
         else:
             filter_names = []
+            arcpy.AddMessage("No filter names provided, all feature classes will be processed.")
         shp_type = parameters[7].valueAsText
         shp_list = []
 
@@ -231,33 +232,29 @@ class Tool:
             #raise TypeError("headers must be in these name")
             for gdb_path in gdb_list:
                 arcpy.env.workspace = gdb_path
-                if isinstance(filter_names, list):
-                    filter_list = []
-                    for item in filter_names:
-                        filter_list.extend(str(item).split(","))
-                for filter_name in filter_list:
+        
+                for filter_name in filter_names:
                     if filter_name != "":
                         for feature_class in arcpy.ListFeatureClasses(f"*{filter_name}*", shp_type):
                             if feature_class not in feature_classes:
                                 feature_classes.append(feature_class)
-                        arcpy.AddMessage(f"Feature classes with filter {filter_name} are {feature_classes}")
-
+                            arcpy.AddMessage(f"Feature classes with filter {filter_name} are {feature_classes}")
+                            if not arcpy.Exists(feature_class):
+                                arcpy.AddWarning(f"The feature class {feature_class} does not exist. Skipping...")
+                                continue
+                            if fields_to_change is not None:
+                                self.__change_field_name(feature_class, fields_to_change)
+                            if fields_to_add is not None:
+                                self.__add_field_name(feature_class, fields_to_add)
+                            if fields_to_delete is not None:
+                                self.__delete_field_name(feature_class, fields_to_delete)
+                            shp_list.append(feature_class)
+                
         else:
             arcpy.AddMessage('No gdb in Folder')
             if len(feature_classes) == 0:
                 arcpy.AddMessage("No feature classes found in the specified geodatabases.")
                 return
-        for feature_class in feature_classes:
-            if not arcpy.Exists(feature_class):
-                arcpy.AddWarning(f"The feature class {feature_class} does not exist. Skipping...")
-                continue
-            if fields_to_change is not None:
-                self.__change_field_name(feature_class, fields_to_change)
-            if fields_to_add is not None:
-                self.__add_field_name(feature_class, fields_to_add)
-            if fields_to_delete is not None:
-                self.__delete_field_name(feature_class, fields_to_delete)
-            shp_list.append(feature_class)
         return
 
     def postExecute(self, parameters):
